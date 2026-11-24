@@ -2,10 +2,9 @@
 // js/index.js - Lógica de Autenticación, PWA Estricta y OneSignal (Panita Rides)
 // ==========================================
 
-// Configuración e Inicialización de Supabase
-// Nota: Verifica si Panita Rides usará este mismo proyecto o uno nuevo en Supabase
-const SUPABASE_URL = 'https://gklquvthucityzgcamao.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_-p-YL6bWXAQGTddkmm9_mA_HgKlR_eM';
+// Configuración e Inicialización de Supabase para Panita Rides (proyecto: taxi)
+const SUPABASE_URL = 'https://pmzrflneqkgcztnexvam.supabase.co';[cite: 2]
+const SUPABASE_KEY = 'sb_publishable_83f9zZpk1K8vbczw6MNWKQ_x1a30-Ip';
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Variables globales para la PWA
@@ -167,7 +166,7 @@ if (formRegister) {
 
     mostrarMensaje("¡Registro completado! Enviando push de bienvenida...", "success");
 
-    // 2. Disparo de Notificación Push mediante Edge Function
+    // 2. Disparo de Notificación Push mediante Edge Function del nuevo proyecto
     try {
       let subscriptionId = null;
       if (typeof OneSignal !== 'undefined' && OneSignal.User && OneSignal.User.PushSubscription) {
