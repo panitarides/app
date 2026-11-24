@@ -1,4 +1,4 @@
-const CACHE_NAME = 'voom-cache-v6.1';
+const CACHE_NAME = 'panita-rides-cache-v1.0';
 const urlsToCache = [
   './',
   './index.html',
@@ -78,7 +78,7 @@ self.addEventListener('fetch', event => {
 // ==========================================
 
 self.addEventListener('push', function(event) {
-  let data = { title: 'Voom', body: 'Tienes un nuevo comunicado' };
+  let data = { title: 'Panita Rides', body: 'Tienes un nuevo comunicado' };
 
   if (event.data) {
     try {
@@ -99,7 +99,7 @@ self.addEventListener('push', function(event) {
   };
 
   event.waitUntil(
-    self.registration.showNotification(data.title || 'Voom - Comunicado Oficial', options)
+    self.registration.showNotification(data.title || 'Panita Rides - Comunicado Oficial', options)
   );
 });
 
