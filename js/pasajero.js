@@ -1,0 +1,392 @@
+// ==========================================
+// js/pasajero.js - Lógica Integral del Pasajero (Con Cupones de Referidos y Nuevas Tarifas)
+// ==========================================
+
+let supabaseClient = null;
+let map = null;
+let origenMarker = null;
+let destinoMarker = null;
+let currentUser = null;
+let debounceTimer = null;
+let modoSeleccion = 'destino';
+let viajeActualId = null;
+let cuponesDisponibles = 0;
+
+const CONFIG_DEFECTO = {
+  SUPABASE_URL: "https://gklquvthucityzgcamao.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_-p-YL6bWXAQGTddkmm9_mA_HgKlR_eM",
+  UBICACION_DEFECTO: { lat: -11.9961, lng: -77.0583, nombre: "Centro Comercial Plaza Norte, Lima" },
+  TARIFA: { precioBase: 6.00, precioPorKm: 3.00, tarifaMinima: 10.00 },
+  MULTIPLICADORES: { moto: 0.85, economico: 1.0, confort: 1.40, flete: 2.60, grua: 5.00 }
+};
+
+function getConfig() {
+  return typeof CONFIG_VOOM !== 'undefined' ? CONFIG_VOOM : CONFIG_DEFECTO;
+}
+
+let origenCoords = { ...(getConfig().UBICACION_DEFECTO || CONFIG_DEFECTO.UBICACION_DEFECTO) };
+let destinoCoords = null;
+
+window.addEventListener('DOMContentLoaded', () => {
+  inicializarMapa();
+  configurarBuscadorDestino();
+  conectarSupabaseEnSegundoPlano();
+});
+
+async function conectarSupabaseEnSegundoPlano() {
+  try {
+    if (window.supabase && window.supabase.createClient) {
+      const config = getConfig();
+      supabaseClient = window.supabase.createClient(config.SUPABASE_URL, config.SUPABASE_ANON_KEY);
+      window.supabaseClient = supabaseClient;
+      
+      const { data: { user } } = await supabaseClient.auth.getUser();
+      if (user) {
+        currentUser = user;
+        const nameEl = document.getElementById('user-name');
+        if (nameEl) {
+          nameEl.textContent = user.user_metadata?.full_name || user.email.split('@')[0];
+        }
+        await cargarCuponesPasajero();
+        verificarViajeActivoPasajero();
+      }
+    }
+  } catch (err) {
+    console.warn("Modo local o sin sesión activa en Supabase:", err);
+  }
+}
+
+async function cargarCuponesPasajero() {
+  if (!supabaseClient || !currentUser) return;
+  try {
+    const { data } = await supabaseClient
+      .from('perfiles')
+      .select('cupones_10_pct')
+      .eq('id', currentUser.id)
+      .maybeSingle();
+
+    cuponesDisponibles = data?.cupones_10_pct || 0;
+    if (cuponesDisponibles > 0) {
+      console.log(`🎁 Tienes ${cuponesDisponibles} cupón(es) de 10% de descuento disponible(s).`);
+    }
+  } catch (err) {
+    console.warn("Error al cargar cupones del pasajero:", err);
+  }
+}
+
+function activarModoSeleccion(modo) {
+  modoSeleccion = modo;
+}
+
+function inicializarMapa() {
+  const mapContainer = document.getElementById('map');
+  if (!mapContainer || typeof L === 'undefined' || map !== null) return;
+
+  map = L.map('map', { zoomControl: false }).setView([origenCoords.lat, origenCoords.lng], 15);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+
+  setTimeout(() => {
+    if (map) map.invalidateSize();
+  }, 250);
+
+  const greenIcon = L.divIcon({
+    className: 'custom-div-icon',
+    html: "<div style='background-color:#10b981; width:18px; height:18px; border-radius:50%; border:3px solid white; box-shadow:0 2px 6px rgba(0,0,0,0.3);'></div>",
+    iconSize: [18, 18],
+    iconAnchor: [9, 9]
+  });
+
+  origenMarker = L.marker([origenCoords.lat, origenCoords.lng], { draggable: true, icon: greenIcon })
+    .addTo(map)
+    .bindPopup("<b>Origen (A)</b><br>Haz clic o arrastra")
+    .openPopup();
+
+  obtenerDireccionPorCoords(origenCoords.lat, origenCoords.lng, 'origen');
+
+  map.on('click', (e) => {
+    const { lat, lng } = e.latlng;
+    if (modoSeleccion === 'origen') {
+      actualizarPosicionOrigen(lat, lng);
+    } else {
+      actualizarPosicionDestino(lat, lng);
+    }
+  });
+
+  origenMarker.on('dragend', (e) => {
+    const pos = e.target.getLatLng();
+    actualizarPosicionOrigen(pos.lat, pos.lng);
+  });
+}
+
+function actualizarPosicionOrigen(lat, lng) {
+  origenCoords = { lat, lng };
+  if (origenMarker) {
+    origenMarker.setLatLng([lat, lng]);
+  }
+  obtenerDireccionPorCoords(lat, lng, 'origen');
+  recalcularTarifasViaje();
+}
+
+function actualizarPosicionDestino(lat, lng) {
+  destinoCoords = { lat, lng };
+
+  const orangeIcon = L.divIcon({
+    className: 'custom-div-icon',
+    html: "<div style='background-color:#f97316; width:18px; height:18px; border-radius:50%; border:3px solid white; box-shadow:0 2px 6px rgba(0,0,0,0.3);'></div>",
+    iconSize: [18, 18],
+    iconAnchor: [9, 9]
+  });
+
+  if (destinoMarker) {
+    destinoMarker.setLatLng([lat, lng]);
+  } else {
+    destinoMarker = L.marker([lat, lng], { draggable: true, icon: orangeIcon })
+      .addTo(map)
+      .bindPopup("<b>Destino (B)</b>")
+      .openPopup();
+
+    destinoMarker.on('dragend', (e) => {
+      const pos = e.target.getLatLng();
+      actualizarPosicionDestino(pos.lat, pos.lng);
+    });
+  }
+
+  obtenerDireccionPorCoords(lat, lng, 'destino');
+  recalcularTarifasViaje();
+
+  const btnSolicitar = document.getElementById('btn-solicitar');
+  if (btnSolicitar) {
+    btnSolicitar.disabled = false;
+    btnSolicitar.className = "w-full bg-orange-500 hover:bg-orange-600 text-white font-black py-4 rounded-2xl transition-all shadow-lg shadow-orange-500/25 text-xs tracking-wider uppercase active:scale-[0.98]";
+    btnSolicitar.textContent = cuponesDisponibles > 0 ? "Solicitar Viaje (¡10% OFF Aplicado!) 🚀" : "Solicitar Viaje 🚀";
+  }
+}
+
+async function obtenerDireccionPorCoords(lat, lng, tipo) {
+  const inputEl = document.getElementById(tipo === 'origen' ? 'origen-txt' : 'destino-txt');
+  if (inputEl) inputEl.value = "Obteniendo dirección...";
+
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&countrycodes=pe`);
+    const data = await res.json();
+    if (data && data.display_name && inputEl) {
+      const partes = data.display_name.split(',');
+      inputEl.value = partes.slice(0, 3).join(',');
+    }
+  } catch (e) {
+    if (inputEl) inputEl.value = `Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`;
+  }
+}
+
+function calcularDistanciaKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * 
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function recalcularTarifasViaje() {
+  if (!origenCoords || !destinoCoords) return;
+
+  const distanciaKm = calcularDistanciaKm(
+    origenCoords.lat, origenCoords.lng, 
+    destinoCoords.lat, destinoCoords.lng
+  );
+
+  const config = getConfig();
+  const { precioBase, precioPorKm, tarifaMinima } = config.TARIFA || CONFIG_DEFECTO.TARIFA;
+  const multiplicadores = config.MULTIPLICADORES || CONFIG_DEFECTO.MULTIPLICADORES;
+
+  document.querySelectorAll('.service-card').forEach(card => {
+    const tipo = card.getAttribute('data-service');
+    const mult = multiplicadores[tipo] || 1.0;
+
+    let precioCalculado = (precioBase + (distanciaKm * precioPorKm)) * mult;
+    if (precioCalculado < (tarifaMinima * mult)) {
+      precioCalculado = tarifaMinima * mult;
+    }
+
+    // Aplicar 10% de descuento si el pasajero tiene cupones disponibles
+    let precioFinal = precioCalculado;
+    if (cuponesDisponibles > 0) {
+      precioFinal = precioCalculado * 0.90;
+    }
+
+    const priceTag = card.querySelector('.price-tag');
+    if (priceTag) {
+      priceTag.setAttribute('data-base', precioFinal.toFixed(2));
+      if (cuponesDisponibles > 0) {
+        priceTag.innerHTML = `<span class="line-through text-[9px] text-slate-400 mr-1">S/ ${precioCalculado.toFixed(2)}</span> S/ ${precioFinal.toFixed(2)} <span class="text-[8px] bg-emerald-100 text-emerald-700 px-1 rounded">-10%</span>`;
+      } else {
+        priceTag.textContent = `S/ ${precioFinal.toFixed(2)}`;
+      }
+    }
+  });
+}
+
+function configurarBuscadorDestino() {
+  const destinoInput = document.getElementById('destino-txt');
+  const sugerenciasBox = document.getElementById('sugerencias-destino');
+
+  if (!destinoInput || !sugerenciasBox) return;
+
+  destinoInput.addEventListener('input', (e) => {
+    const query = e.target.value.trim();
+    clearTimeout(debounceTimer);
+
+    if (query.length < 3) {
+      sugerenciasBox.classList.add('hidden');
+      return;
+    }
+
+    debounceTimer = setTimeout(async () => {
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=pe&limit=5`;
+        const res = await fetch(url);
+        const resultados = await res.json();
+
+        sugerenciasBox.innerHTML = '';
+        if (resultados.length === 0) {
+          sugerenciasBox.classList.add('hidden');
+          return;
+        }
+
+        resultados.forEach(item => {
+          const div = document.createElement('div');
+          div.className = "p-3 hover:bg-orange-50 cursor-pointer border-b border-slate-100 text-xs font-semibold text-slate-700 flex items-center space-x-2";
+          div.innerHTML = `<span>📍</span> <span>${item.display_name}</span>`;
+          div.onclick = () => {
+            destinoInput.value = item.display_name.split(',').slice(0, 3).join(',');
+            actualizarPosicionDestino(parseFloat(item.lat), parseFloat(item.lon));
+            if (map) map.setView([item.lat, item.lon], 15);
+            sugerenciasBox.classList.add('hidden');
+          };
+          sugerenciasBox.appendChild(div);
+        });
+
+        sugerenciasBox.classList.remove('hidden');
+      } catch (err) {
+        console.error("Error al buscar dirección:", err);
+      }
+    }, 400);
+  });
+}
+
+async function solicitarViaje() {
+  const destinoInput = document.getElementById('destino-txt');
+  const destino = destinoInput ? destinoInput.value.trim() : '';
+
+  if (!destino) {
+    alert("Por favor ingresa o marca en el mapa el punto de destino.");
+    if (destinoInput) destinoInput.focus();
+    return;
+  }
+
+  const btnSolicitar = document.getElementById('btn-solicitar');
+  const estadoBox = document.getElementById('estado-viaje-box');
+  const estadoTexto = document.getElementById('estado-viaje-texto');
+
+  if (btnSolicitar) btnSolicitar.disabled = true;
+  if (estadoBox) estadoBox.classList.remove('hidden');
+
+  try {
+    const servicioActual = window.servicioSeleccionado || 'economico';
+    const selectedCard = document.querySelector(`[data-service="${servicioActual}"]`);
+    const config = getConfig();
+    const precioFinal = selectedCard && selectedCard.querySelector('.price-tag').getAttribute('data-base') 
+      ? parseFloat(selectedCard.querySelector('.price-tag').getAttribute('data-base')) 
+      : config.TARIFA.tarifaMinima;
+
+    if (supabaseClient && currentUser) {
+      if (cuponesDisponibles > 0) {
+        await supabaseClient
+          .from('perfiles')
+          .update({ cupones_10_pct: cuponesDisponibles - 1 })
+          .eq('id', currentUser.id);
+        cuponesDisponibles--;
+      }
+
+      const { data, error } = await supabaseClient.from('viajes').insert({
+        pasajero_id: currentUser.id,
+        tipo_servicio: servicioActual,
+        origen_lat: origenCoords.lat,
+        origen_lng: origenCoords.lng,
+        destino_direccion: destino,
+        destino_lat: destinoCoords ? destinoCoords.lat : null,
+        destino_lng: destinoCoords ? destinoCoords.lng : null,
+        precio: precioFinal,
+        estado: 'buscando'
+      }).select().single();
+
+      if (!error && data) {
+        viajeActualId = data.id;
+        escribirEstadoPasajero("🔍 Buscando conductor disponible...");
+        escucharEstadoViajePasajero(data.id);
+      }
+    }
+  } catch (err) {
+    console.error("Error al solicitar viaje:", err);
+    if (estadoTexto) estadoTexto.textContent = "🚀 ¡Solicitud simulada con éxito!";
+  }
+}
+
+function escribirEstadoPasajero(texto) {
+  const estadoBox = document.getElementById('estado-viaje-box');
+  const estadoTexto = document.getElementById('estado-viaje-texto');
+  if (estadoBox) estadoBox.classList.remove('hidden');
+  if (estadoTexto) estadoTexto.textContent = texto;
+}
+
+async function verificarViajeActivoPasajero() {
+  if (!currentUser) return;
+  const { data, error } = await supabaseClient
+    .from('viajes')
+    .select('*')
+    .eq('pasajero_id', currentUser.id)
+    .in('estado', ['buscando', 'aceptado', 'en_curso'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!error && data) {
+    viajeActualId = data.id;
+    if (data.estado === 'buscando') escribirEstadoPasajero("🔍 Buscando conductor disponible...");
+    else if (data.estado === 'aceptado') escribirEstadoPasajero("🚗 ¡Conductor asignado! Va en camino a tu origen.");
+    else if (data.estado === 'en_curso') escribirEstadoPasajero("🛣️ Viaje en curso hacia tu destino...");
+    
+    escucharEstadoViajePasajero(data.id);
+  }
+}
+
+function escucharEstadoViajePasajero(idViaje) {
+  supabaseClient
+    .channel(`pasajero-viaje-${idViaje}`)
+    .on('postgres_changes', {
+      event: 'UPDATE',
+      schema: 'public',
+      table: 'viajes',
+      filter: `id=eq.${idViaje}`
+    }, (payload) => {
+      const nuevoEstado = payload.new.estado;
+      if (nuevoEstado === 'aceptado') {
+        escribirEstadoPasajero("🚗 ¡Un conductor ha aceptado tu viaje y va en camino!");
+      } else if (nuevoEstado === 'en_curso') {
+        escribirEstadoPasajero("🛣️ Tu viaje está en marcha hacia el destino.");
+      } else if (nuevoEstado === 'completado') {
+        escribirEstadoPasajero("✅ ¡Viaje finalizado con éxito! Gracias por viajar en Voom.");
+        setTimeout(() => {
+          window.location.href = 'selector.html';
+        }, 3000);
+      }
+    })
+    .subscribe();
+}
