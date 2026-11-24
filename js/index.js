@@ -1,8 +1,9 @@
 // ==========================================
-// js/index.js - Lógica de Autenticación, PWA Estricta y OneSignal
+// js/index.js - Lógica de Autenticación, PWA Estricta y OneSignal (Panita Rides)
 // ==========================================
 
 // Configuración e Inicialización de Supabase
+// Nota: Verifica si Panita Rides usará este mismo proyecto o uno nuevo en Supabase
 const SUPABASE_URL = 'https://gklquvthucityzgcamao.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_-p-YL6bWXAQGTddkmm9_mA_HgKlR_eM';
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -27,7 +28,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // 2. Si NO está instalada como PWA, detenemos la ejecución para que no valide sesión ni permita operar en web
   if (!isRunningStandalone()) {
-    console.warn("Acceso bloqueado: La aplicación debe instalarse como PWA para ser utilizada.");
+    console.warn("Acceso bloqueado: Panita Rides debe instalarse como PWA para ser utilizada.");
     return;
   }
 
@@ -112,7 +113,7 @@ if (formLogin) {
   });
 }
 
-// Registro + DNI + Celular Amarrado + Notificación Push Directa
+// Registro + DNI + Celular Amarrado + Código de Referido + Notificación Push Directa
 if (formRegister) {
   formRegister.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -127,26 +128,37 @@ if (formRegister) {
     const telefono = document.getElementById('reg-telefono').value;
     const email = document.getElementById('reg-email').value;
     const password = document.getElementById('reg-password').value;
+    const inputRef = document.getElementById('reg-referido');
+    const referido = inputRef ? inputRef.value.trim().toUpperCase() : '';
 
     if (!/^9[0-9]{8}$/.test(telefono)) {
-      mostrarMensaje("El celular debe ser válido de Perú (9 dígitos)", "error");
+      mostrarMensaje("El celular debe tener un formato válido de 9 dígitos (Ej. 9XXXXXXXX)", "error");
       return;
     }
 
-    mostrarMensaje("Creando cuenta en Voom...", "info");
+    mostrarMensaje("Creando cuenta en Panita Rides...", "info");
 
-    // 1. Alta en Supabase con metadatos
+    // 1. Alta en Supabase con metadatos (incluye código de referido si se ingresó)
+    const metadata = { full_name: nombre, dni: dni, telefono: telefono };
+    if (referido) {
+      metadata.referral_code = referido;
+    }
+
     const { data, error } = await supabaseClient.auth.signUp({
       email,
       password,
       options: {
-        data: { full_name: nombre, dni: dni, telefono: telefono }
+        data: metadata
       }
     });
 
     if (error) {
       mostrarMensaje(error.message, "error");
       return;
+    }
+
+    if (referido) {
+      localStorage.removeItem('panita_codigo_referido');
     }
 
     if (data && data.user) {
@@ -162,11 +174,11 @@ if (formRegister) {
         subscriptionId = OneSignal.User.PushSubscription.id;
       }
 
-      await fetch('https://gklquvthucityzgcamao.supabase.co/functions/v1/enviar-push', {
+      await fetch(`${SUPABASE_URL}/functions/v1/enviar-push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          titulo: "¡Bienvenido a Voom Perú! 🚗",
+          titulo: "¡Bienvenido a Panita Rides! 🚗",
           mensaje: `Hola ${nombre}, tu cuenta asociada al celular ${telefono} ha sido registrada correctamente.`,
           subscription_id: subscriptionId
         })
@@ -264,7 +276,7 @@ document.addEventListener('click', async (e) => {
     }
     deferredPrompt = null;
   } else {
-    alert("Para instalar Voom en tu dispositivo, toca los tres puntos (⋮) en la esquina superior derecha de tu navegador y selecciona 'Instalar aplicación' o 'Agregar a la pantalla principal'.");
+    alert("Para instalar Panita Rides en tu dispositivo, toca los tres puntos (⋮) en la esquina superior derecha de tu navegador y selecciona 'Instalar aplicación' o 'Agregar a la pantalla principal'.");
   }
 });
 
