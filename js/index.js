@@ -1,9 +1,14 @@
 // ==========================================
-// js/index.js - Lógica de Autenticación, PWA Estricta y OneSignal (Panita Rides)
+// js/index.js - Lógica de Autenticación, PWA y OneSignal (Panita Rides)
 // ==========================================
 
+// MODO DESARROLLO / PRODUCCIÓN:
+// false = Permite usar y probar desde navegador web en PC
+// true  = Bloquea el navegador web y exige que la PWA esté instalada
+const BLOQUEO_PWA_ESTRICTO = false;
+
 // Configuración e Inicialización de Supabase para Panita Rides (proyecto: taxi)
-const SUPABASE_URL = 'https://pmzrflneqkgcztnexvam.supabase.co';[cite: 2]
+const SUPABASE_URL = 'https://pmzrflneqkgcztnexvam.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_83f9zZpk1K8vbczw6MNWKQ_x1a30-Ip';
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -20,25 +25,24 @@ const formLogin = document.getElementById('form-login');
 const formRegister = document.getElementById('form-register');
 const statusMsg = document.getElementById('status-message');
 
-// Arranque al cargar el DOM (Restringido estrictamente a PWA instalada)
+// Arranque al cargar el DOM
 window.addEventListener('DOMContentLoaded', () => {
-  // 1. Verificamos el estado de la PWA primero
+  // 1. Verificamos el estado de la PWA (solo bloquea si BLOQUEO_PWA_ESTRICTO = true)
   checkPWAState();
 
-  // 2. Si NO está instalada como PWA, detenemos la ejecución para que no valide sesión ni permita operar en web
-  if (!isRunningStandalone()) {
+  // 2. Si el bloqueo estricto está activo y NO está instalada como PWA, detenemos la ejecución
+  if (BLOQUEO_PWA_ESTRICTO && !isRunningStandalone()) {
     console.warn("Acceso bloqueado: Panita Rides debe instalarse como PWA para ser utilizada.");
     return;
   }
 
-  // 3. Si SÍ es una PWA instalada, procedemos con la validación estricta contra el servidor real de Supabase
+  // 3. Validación de sesión activa contra Supabase
   supabaseClient.auth.getUser().then(async ({ data: { user }, error }) => {
     if (user && !error) {
       vincularOneSignalUsuario(user.id);
       mostrarMensaje("Sesión activa verificada. Redirigiendo...", "success");
       window.location.href = 'selector.html';
     } else {
-      // Si el usuario fue eliminado en Supabase o el token expiró, limpiamos el caché local
       await supabaseClient.auth.signOut();
     }
   }).catch(async (err) => {
@@ -88,7 +92,7 @@ if (formLogin) {
   formLogin.addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    if (!isRunningStandalone()) {
+    if (BLOQUEO_PWA_ESTRICTO && !isRunningStandalone()) {
       checkPWAState();
       return;
     }
@@ -112,12 +116,12 @@ if (formLogin) {
   });
 }
 
-// Registro + DNI + Celular Amarrado + Código de Referido + Notificación Push Directa
+// Registro + Documento + Celular + Código de Referido + Notificación Push Directa
 if (formRegister) {
   formRegister.addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    if (!isRunningStandalone()) {
+    if (BLOQUEO_PWA_ESTRICTO && !isRunningStandalone()) {
       checkPWAState();
       return;
     }
@@ -131,13 +135,13 @@ if (formRegister) {
     const referido = inputRef ? inputRef.value.trim().toUpperCase() : '';
 
     if (!/^9[0-9]{8}$/.test(telefono)) {
-      mostrarMensaje("El celular debe tener un formato válido de 9 dígitos (Ej. 9XXXXXXXX)", "error");
+      mostrarMensaje("El celular debe tener 9 dígitos empezando por 9 (Ej. 912345678)", "error");
       return;
     }
 
     mostrarMensaje("Creando cuenta en Panita Rides...", "info");
 
-    // 1. Alta en Supabase con metadatos (incluye código de referido si se ingresó)
+    // 1. Alta en Supabase con metadatos
     const metadata = { full_name: nombre, dni: dni, telefono: telefono };
     if (referido) {
       metadata.referral_code = referido;
@@ -164,9 +168,9 @@ if (formRegister) {
       vincularOneSignalUsuario(data.user.id);
     }
 
-    mostrarMensaje("¡Registro completado! Enviando push de bienvenida...", "success");
+    mostrarMensaje("¡Registro completado! Redirigiendo...", "success");
 
-    // 2. Disparo de Notificación Push mediante Edge Function del nuevo proyecto
+    // 2. Disparo de Notificación Push mediante Edge Function (si existe)
     try {
       let subscriptionId = null;
       if (typeof OneSignal !== 'undefined' && OneSignal.User && OneSignal.User.PushSubscription) {
@@ -229,6 +233,14 @@ function isRunningStandalone() {
 }
 
 function checkPWAState() {
+  // Si el bloqueo estricto está apagado, siempre mostramos la app en web
+  if (!BLOQUEO_PWA_ESTRICTO) {
+    if (overlay) overlay.classList.add('hidden');
+    if (iosBanner) iosBanner.classList.add('hidden');
+    if (appContent) appContent.classList.remove('hidden');
+    return;
+  }
+
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
   const standalone = isRunningStandalone();
 
